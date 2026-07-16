@@ -13,6 +13,17 @@ if (str_starts_with($normalizedPath, 'server/')) {
     $normalizedPath = substr($normalizedPath, 7);
 }
 
+// Serve privacy policy without requiring the database.
+if ($normalizedPath === 'privacy-policy.html' || $normalizedPath === 'privacy-policy') {
+    $privacyPath = __DIR__ . '/privacy-policy.html';
+    if (is_file($privacyPath)) {
+        header('Content-Type: text/html; charset=utf-8');
+        header('Cache-Control: public, max-age=3600');
+        readfile($privacyPath);
+        exit;
+    }
+}
+
 if (str_starts_with($normalizedPath, 'admin')) {
     $adminRelative = substr($normalizedPath, strlen('admin'));
     $adminRelative = ltrim($adminRelative, '/');
