@@ -869,14 +869,22 @@ function handleCreatePlayer(PDO $pdo): void {
 
     $stmt = $pdo->prepare("SELECT 1 FROM players WHERE email = ? LIMIT 1");
     $stmt->execute([$email]);
-    $alreadyExisted = $stmt->fetch() !== false;
+    if ($stmt->fetch() !== false) {
+        http_response_code(409);
+        echo json_encode([
+            'success' => false,
+            'exists' => true,
+            'error' => 'Email already registered'
+        ]);
+        return;
+    }
 
     $currentPuzzle = 1;
     $maxPuzzle = 1;
     $puzzlesPlayed = 0;
     $playTime = 0.0;
 
-    if ($deviceId !== null && !$alreadyExisted) {
+    if ($deviceId !== null) {
         ensureDeviceProgressColumns($pdo);
         $devStmt = $pdo->prepare("SELECT current_puzzle_number, max_puzzle_number, puzzles_played, total_play_time_seconds FROM devices WHERE device_id = ? LIMIT 1");
         $devStmt->execute([$deviceId]);
@@ -889,29 +897,39 @@ function handleCreatePlayer(PDO $pdo): void {
         }
     }
 
-    $stmt = $pdo->prepare("
-        INSERT INTO players (
-            email,
-            player_name,
-            device_id,
-            current_puzzle_number,
-            max_puzzle_number,
-            puzzles_played,
-            total_play_time_seconds,
-            last_seen_at,
-            created_at,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        ON CONFLICT (email) DO UPDATE SET
-            device_id = COALESCE(EXCLUDED.device_id, players.device_id),
-            last_seen_at = CURRENT_TIMESTAMP,
-            updated_at = CURRENT_TIMESTAMP
-    ");
-    $stmt->execute([$email, $playerName, $deviceId, $currentPuzzle, $maxPuzzle, $puzzlesPlayed, $playTime]);
+    try {
+        $stmt = $pdo->prepare("
+            INSERT INTO players (
+                email,
+                player_name,
+                device_id,
+                current_puzzle_number,
+                max_puzzle_number,
+                puzzles_played,
+                total_play_time_seconds,
+                last_seen_at,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ");
+        $stmt->execute([$email, $playerName, $deviceId, $currentPuzzle, $maxPuzzle, $puzzlesPlayed, $playTime]);
+    } catch (PDOException $e) {
+        // Race: another signup landed the same email between our check and insert.
+        if (($e->errorInfo[0] ?? '') === '23505') {
+            http_response_code(409);
+            echo json_encode([
+                'success' => false,
+                'exists' => true,
+                'error' => 'Email already registered'
+            ]);
+            return;
+        }
+        throw $e;
+    }
 
     echo json_encode([
         'success' => true,
-        'exists' => $alreadyExisted
+        'exists' => false
     ]);
 }

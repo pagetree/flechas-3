@@ -131,19 +131,18 @@ private fun AppRoot(vm: GameViewModel = viewModel()) {
         )
     }
 
-    // Mark as "seen" when screen 1 appears, so the player never sees onboarding again after installation.
-    // While we force onboarding every load for development, we skip persisting the "seen" flag.
-    LaunchedEffect(onboardingStep) {
-        if (!SHOW_ONBOARDING_EVERY_LOAD_FOR_WORKING && onboardingStep == 1) {
+    fun finishOnboarding() {
+        if (!SHOW_ONBOARDING_EVERY_LOAD_FOR_WORKING) {
             prefs.edit { putBoolean(ONBOARDING_DONE_KEY, true) }
         }
+        onboardingStep = 0
     }
 
     if (onboardingStep != 0) {
         OnboardingFlow(
             step = onboardingStep,
             onAgreeContinue = { onboardingStep = 2 },
-            onJustPlay = { onboardingStep = 0 },
+            onJustPlay = { finishOnboarding() },
             onOpenPrivacyPolicy = { onboardingStep = 3 },
             onBackFromPrivacyPolicy = { onboardingStep = 1 },
             onOpenPlayerSignup = { onboardingStep = 4 },
@@ -153,8 +152,18 @@ private fun AppRoot(vm: GameViewModel = viewModel()) {
     }
 
     var inGame by rememberSaveable { mutableStateOf(false) }
+    var showMenuSignup by rememberSaveable { mutableStateOf(false) }
     val state by vm.state.collectAsState()
     var displayedLevelInMenu by rememberSaveable { mutableStateOf(state.puzzleNumber) }
+
+    if (showMenuSignup) {
+        PlayerSignupScreen(
+            onBack = { showMenuSignup = false },
+            onJustPlay = { showMenuSignup = false },
+            onSignupSuccess = { showMenuSignup = false }
+        )
+        return
+    }
 
     if (!inGame) {
         MainMenu(
@@ -163,7 +172,8 @@ private fun AppRoot(vm: GameViewModel = viewModel()) {
             onPlay = {
                 vm.startRandomPuzzle()
                 inGame = true
-            }
+            },
+            onCreatePlayerId = { showMenuSignup = true }
         )
 
         LaunchedEffect(state.isLoadingProgress) {
@@ -301,6 +311,11 @@ private fun PlayerSignupScreen(
         scope.launch {
             try {
                 val check = api.checkPlayerEmail(CheckPlayerEmailRequest(trimmedEmail))
+                if (check.exists) {
+                    emailError = "onboarding_error_email_exists"
+                    return@launch
+                }
+
                 val deviceId = Settings.Secure.getString(
                     context.contentResolver,
                     Settings.Secure.ANDROID_ID
@@ -312,18 +327,22 @@ private fun PlayerSignupScreen(
                         device_id = deviceId.ifBlank { null }
                     )
                 )
-                if (created.success) {
+                if (created.success && !created.exists) {
                     context.getSharedPreferences(ONBOARDING_PREFS_NAME, Context.MODE_PRIVATE).edit {
                         putString(PLAYER_EMAIL_KEY, trimmedEmail.lowercase())
                         putString(PLAYER_NAME_KEY, trimmedName)
                     }
                     onSignupSuccess()
+                } else if (created.exists) {
+                    emailError = "onboarding_error_email_exists"
                 } else {
-                    if (check.exists) {
-                        emailError = "onboarding_error_email_exists"
-                    } else {
-                        submitError = "onboarding_error_create_player_failed"
-                    }
+                    submitError = "onboarding_error_create_player_failed"
+                }
+            } catch (e: HttpException) {
+                when (e.code()) {
+                    409 -> emailError = "onboarding_error_email_exists"
+                    400 -> submitError = "onboarding_error_create_player_failed"
+                    else -> submitError = "onboarding_error_network"
                 }
             } catch (e: Exception) {
                 submitError = "onboarding_error_network"
@@ -844,11 +863,17 @@ private fun OnboardingScreen(
 }
 
 @Composable
-private fun MainMenu(levelNumber: Int, isLoading: Boolean, onPlay: () -> Unit) {
+private fun MainMenu(
+    levelNumber: Int,
+    isLoading: Boolean,
+    onPlay: () -> Unit,
+    onCreatePlayerId: () -> Unit
+) {
     val context = LocalContext.current
     val prefs = remember(context) { context.getSharedPreferences(ONBOARDING_PREFS_NAME, Context.MODE_PRIVATE) }
     val email = prefs.getString(PLAYER_EMAIL_KEY, null)
     val playerName = prefs.getString(PLAYER_NAME_KEY, "")
+    val hasPlayerId = !email.isNullOrBlank() && !playerName.isNullOrBlank()
 
     Box(
         modifier = Modifier
@@ -856,7 +881,7 @@ private fun MainMenu(levelNumber: Int, isLoading: Boolean, onPlay: () -> Unit) {
             .background(AppBg)
             .padding(20.dp)
     ) {
-        if (email != null && !playerName.isNullOrBlank()) {
+        if (hasPlayerId) {
             Text(
                 text = buildAnnotatedString {
                     val fullText = stringResource(R.string.menu_greeting, playerName)
@@ -966,6 +991,18 @@ private fun MainMenu(levelNumber: Int, isLoading: Boolean, onPlay: () -> Unit) {
                     .height(64.dp)
             ) {
                 Text(stringResource(R.string.play_button), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            }
+            if (!hasPlayerId) {
+                Text(
+                    text = stringResource(R.string.onboarding_create_playerid),
+                    color = Color.LightGray,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .padding(top = 18.dp)
+                        .clickable(onClick = onCreatePlayerId)
+                )
             }
         }
     }
