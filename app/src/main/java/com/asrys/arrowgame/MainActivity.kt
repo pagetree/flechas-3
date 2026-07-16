@@ -1,6 +1,8 @@
 package com.asrys.arrowgame
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.SoundPool
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -41,6 +43,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -76,7 +79,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.animation.*
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.*
 import androidx.core.content.edit
 import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.delay
@@ -155,16 +158,24 @@ private fun AppRoot(vm: GameViewModel = viewModel()) {
 
     if (!inGame) {
         MainMenu(
-            levelNumber = displayedLevelInMenu,
+            levelNumber = if (displayedLevelInMenu == 1) state.puzzleNumber else displayedLevelInMenu,
+            isLoading = state.isLoadingProgress,
             onPlay = {
                 vm.startRandomPuzzle()
                 inGame = true
             }
         )
 
+        LaunchedEffect(state.isLoadingProgress) {
+            if (!state.isLoadingProgress) {
+                displayedLevelInMenu = state.puzzleNumber
+            }
+        }
+
         LaunchedEffect(state.puzzleNumber) {
-            if (displayedLevelInMenu != state.puzzleNumber) {
-                delay(800L) // Wait for menu transition to settle
+            // Only perform the delayed slide animation if we're NOT in the initial loading phase
+            if (!state.isLoadingProgress && displayedLevelInMenu != state.puzzleNumber) {
+                delay(800L) 
                 displayedLevelInMenu = state.puzzleNumber
             }
         }
@@ -833,7 +844,7 @@ private fun OnboardingScreen(
 }
 
 @Composable
-private fun MainMenu(levelNumber: Int, onPlay: () -> Unit) {
+private fun MainMenu(levelNumber: Int, isLoading: Boolean, onPlay: () -> Unit) {
     val context = LocalContext.current
     val prefs = remember(context) { context.getSharedPreferences(ONBOARDING_PREFS_NAME, Context.MODE_PRIVATE) }
     val email = prefs.getString(PLAYER_EMAIL_KEY, null)
@@ -882,37 +893,56 @@ private fun MainMenu(levelNumber: Int, onPlay: () -> Unit) {
             val prefix = parts.getOrNull(0) ?: ""
             val suffix = parts.getOrNull(1) ?: ""
 
-            Row(
-                modifier = Modifier.padding(top = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (prefix.isNotEmpty()) {
-                    Text(
-                        text = prefix,
-                        color = Color.LightGray,
-                        fontSize = 18.sp
-                    )
-                }
-                AnimatedContent(
-                    targetState = levelNumber,
-                    transitionSpec = {
-                        (slideInVertically { height -> -height } + fadeIn())
-                            .togetherWith(slideOutVertically { height -> height } + fadeOut())
-                    },
-                    label = "LevelNumberChange"
-                ) { targetLevel ->
-                    Text(
-                        text = targetLevel.toString(),
-                        color = Color.LightGray,
-                        fontSize = 18.sp
-                    )
-                }
-                if (suffix.isNotEmpty()) {
-                    Text(
-                        text = suffix,
-                        color = Color.LightGray,
-                        fontSize = 18.sp
-                    )
+            if (isLoading) {
+                val infiniteTransition = rememberInfiniteTransition(label = "loading")
+                val alpha by infiniteTransition.animateFloat(
+                    initialValue = 0.3f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1000, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "alpha"
+                )
+                Text(
+                    text = stringResource(R.string.loading_level),
+                    color = Color.LightGray.copy(alpha = alpha),
+                    fontSize = 18.sp,
+                    modifier = Modifier.padding(top = 16.dp)
+                )
+            } else {
+                Row(
+                    modifier = Modifier.padding(top = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (prefix.isNotEmpty()) {
+                        Text(
+                            text = prefix,
+                            color = Color.LightGray,
+                            fontSize = 18.sp
+                        )
+                    }
+                    AnimatedContent(
+                        targetState = levelNumber,
+                        transitionSpec = {
+                            (slideInVertically { height -> -height } + fadeIn())
+                                .togetherWith(slideOutVertically { height -> height } + fadeOut())
+                        },
+                        label = "LevelNumberChange"
+                    ) { targetLevel ->
+                        Text(
+                            text = targetLevel.toString(),
+                            color = Color.LightGray,
+                            fontSize = 18.sp
+                        )
+                    }
+                    if (suffix.isNotEmpty()) {
+                        Text(
+                            text = suffix,
+                            color = Color.LightGray,
+                            fontSize = 18.sp
+                        )
+                    }
                 }
             }
         }
@@ -925,7 +955,11 @@ private fun MainMenu(levelNumber: Int, onPlay: () -> Unit) {
         ) {
             Button(
                 onClick = onPlay,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E5BFF)),
+                enabled = !isLoading,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2E5BFF),
+                    disabledContainerColor = Color(0xFF2E5BFF).copy(alpha = 0.5f)
+                ),
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth(0.8f)
@@ -1092,6 +1126,34 @@ private fun GameScreen(vm: GameViewModel, onReturnToMenu: () -> Unit) {
     var waveProgress by remember(level.id) { mutableFloatStateOf(0f) }
     var timerSeconds by remember(level.id) { mutableIntStateOf(0) }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val soundPool = remember {
+        SoundPool.Builder()
+            .setMaxStreams(5)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            .build()
+    }
+    val soundIds = remember(soundPool) {
+        listOf(
+            soundPool.load(context, R.raw.tap1, 1),
+            soundPool.load(context, R.raw.tap2, 1),
+            soundPool.load(context, R.raw.tap3, 1),
+            soundPool.load(context, R.raw.tap4, 1),
+            soundPool.load(context, R.raw.tap5, 1)
+        )
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            soundPool.release()
+        }
+    }
+
     LaunchedEffect(level.id, state.isLevelComplete, state.isGameOver) {
         if (!state.isLevelComplete && !state.isGameOver) {
             while (true) {
@@ -1163,14 +1225,27 @@ private fun GameScreen(vm: GameViewModel, onReturnToMenu: () -> Unit) {
 
 
     LaunchedEffect(level.id) {
+        // Zoom in on puzzle load — more zoom for bigger boards
+        val targetScale = when {
+            level.width >= 22 -> 2.2f  // Nightmare
+            level.width >= 20 -> 1.9f  // Hard
+            else              -> 1.6f  // Normal / Easy
+        }
         scale = 1.0f
         offset = Offset.Zero
         androidx.compose.animation.core.Animatable(1.0f).animateTo(
-            targetValue = 1.5f,
-            animationSpec = androidx.compose.animation.core.tween(durationMillis = 1500)
+            targetValue = targetScale,
+            animationSpec = androidx.compose.animation.core.tween(durationMillis = 1200)
         ) {
             scale = this.value
         }
+    }
+
+    // Minimum zoom = 80% of the current scale so the player can't zoom out to a tiny board
+    val minScale = when {
+        level.width >= 22 -> 1.6f
+        level.width >= 20 -> 1.3f
+        else              -> 1.0f
     }
 
     val density = LocalDensity.current
@@ -1183,7 +1258,7 @@ private fun GameScreen(vm: GameViewModel, onReturnToMenu: () -> Unit) {
                 .background(AppBg)
                 .pointerInput(Unit) {
                     detectTransformGestures { _, pan, zoom, _ ->
-                        val newScale = (scale * zoom).coerceIn(1.0f, 1.5f)
+                        val newScale = (scale * zoom).coerceIn(minScale, 5.0f)
                         // The box width is screen width minus left and right padding
                         val boxSize = size.width.toFloat() - paddingPx * 2f
                         // By calculating maxOffset from the box size, the visual edge of the scaled 
@@ -1295,7 +1370,13 @@ private fun GameScreen(vm: GameViewModel, onReturnToMenu: () -> Unit) {
                         level = level,
                         state = state,
                         waveProgress = waveProgress,
-                        onArrowTap = { id -> vm.onArrowTap(id, scale) }
+                        onArrowTap = { id -> 
+                            if (soundIds.isNotEmpty()) {
+                                val sid = soundIds.random()
+                                soundPool.play(sid, 1f, 1f, 1, 0, 1f)
+                            }
+                            vm.onArrowTap(id, scale) 
+                        }
                     )
                 }
             }
@@ -1322,31 +1403,44 @@ private fun ArrowBoard(
     waveProgress: Float,
     onArrowTap: (Int) -> Unit
 ) {
+    val currentState by androidx.compose.runtime.rememberUpdatedState(state)
+    val currentOnArrowTap by androidx.compose.runtime.rememberUpdatedState(onArrowTap)
+
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(state.remaining) {
-                // onPress fires on finger-DOWN — maximally responsive, no release delay.
+            .pointerInput(level.id) {
                 detectTapGestures(
-                    onPress = { tapOffset ->
-                        if (state.isGameOver || state.isLevelComplete) return@detectTapGestures
-                        val cw = size.width / level.width
-                        val ch = size.height / level.height
-                        val tx = (tapOffset.x / cw).toInt()
-                        val ty = (tapOffset.y / ch).toInt()
-                        state.remaining.firstOrNull { arrow ->
-                            arrow.path.any { it.x == tx && it.y == ty } ||
-                                (arrow.path.isEmpty() && arrow.start.x == tx && arrow.start.y == ty)
-                        }?.let {
-                            onArrowTap(it.id)
+                    onTap = { tapOffset ->
+                        val st = currentState
+                        if (st.isGameOver || st.isLevelComplete) return@detectTapGestures
+                        val cw = size.width / level.width.toFloat()
+                        val ch = size.height / level.height.toFloat()
+                        val tapCX = tapOffset.x / cw  // tap position in cell-space
+                        val tapCY = tapOffset.y / ch
+                        val searchRadius = 1.2f       // cells — generous hit area
+                        var bestArrow: ArrowPiece? = null
+                        var bestDist = Float.MAX_VALUE
+                        for (arrow in st.remaining) {
+                            val cells = if (arrow.path.isNotEmpty()) arrow.path else listOf(arrow.start)
+                            for (cell in cells) {
+                                val dx = cell.x + 0.5f - tapCX
+                                val dy = cell.y + 0.5f - tapCY
+                                val distSq = dx * dx + dy * dy
+                                if (distSq < searchRadius * searchRadius && distSq < bestDist) {
+                                    bestDist = distSq
+                                    bestArrow = arrow
+                                }
+                            }
                         }
+                        bestArrow?.let { currentOnArrowTap(it.id) }
                     }
                 )
             }
     ) {
         val cw = size.width / level.width
         val ch = size.height / level.height
-        val stroke = min(cw, ch) * 0.13f
+        val stroke = min(cw, ch) * 0.17f
         val dotRadius = min(cw, ch) * 0.09f
         val clearedDotColor = Color(0xFF9FB4FF).copy(alpha = 0.16f)
         val movingById = state.movingArrows.associateBy { it.id }
@@ -1392,9 +1486,12 @@ private fun ArrowBoard(
 
         for (arrow in state.remaining) {
             val moving = movingById[arrow.id]
-            val movingRatio = if (moving == null || moving.maxProgressCells <= 0f) 0f
-            else (moving.progressCells / moving.maxProgressCells).coerceIn(0f, 1f)
-            val movingColor = lerp(Color.White, Color(0xFF00E676), movingRatio)
+            // Color based on ABSOLUTE cells traveled (not ratio of full exit distance).
+            // Arrow hits full bold green after just 2 cells — feels instant and satisfying.
+            val cellsTraveled = moving?.progressCells ?: 0f
+            val fastRatio = (cellsTraveled / 2.0f).coerceIn(0f, 1f)
+            val boldGreen = Color(0xFF00C853)
+            val movingColor = lerp(Color.White, boldGreen, fastRatio)
             val color = when {
                 state.lastBlockedArrowId == arrow.id -> Color(0xFFE53935)
                 moving != null -> {

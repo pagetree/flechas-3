@@ -42,7 +42,8 @@ data class GameState(
     val lastBlockedArrowId: Int? = null,
     val collisionTrigger: Int = 0,
     val isGameOver: Boolean = false,
-    val isLevelComplete: Boolean = false
+    val isLevelComplete: Boolean = false,
+    val isLoadingProgress: Boolean = true  // true until server level is fetched
 )
 
 data class MovingArrowState(

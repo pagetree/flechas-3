@@ -7,6 +7,7 @@
     <string name="level_label">LEVEL %d</string>
     <string name="out_of_lives">KEINE LEBEN MEHR!</string>
     <string name="try_again_in">Versuche es erneut in...</string>
+    <string name="loading_level">Level wird geladen...</string>
     <string name="onboarding_logo_content_description">Arrow Game Logo</string>
     <string name="onboarding_welcome_title">Datenschutz ist wichtig</string>
     <string name="onboarding_welcome_description">Keine Werbung. Kein Verkauf deiner Daten. Wir speichern nur eine Geraete-ID, um deinen Fortschritt auf verschiedenen Geraeten zu sichern.</string>

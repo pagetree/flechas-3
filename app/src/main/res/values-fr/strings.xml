@@ -7,6 +7,7 @@
     <string name="level_label">NIVEAU %d</string>
     <string name="out_of_lives">PLUS DE VIES !</string>
     <string name="try_again_in">Réessaye dans...</string>
+    <string name="loading_level">Chargement du niveau...</string>
     <string name="onboarding_logo_content_description">Logo Arrow Game</string>
     <string name="onboarding_welcome_title">La confidentialité compte</string>
     <string name="onboarding_welcome_description">Pas de pubs. Pas de vente de données. Nous stockons seulement un identifiant appareil pour sauvegarder votre progression entre appareils.</string>

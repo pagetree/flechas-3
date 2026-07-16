@@ -8,6 +8,8 @@ local.properties
 # Secrets / credentials
 .env
 .env.*
+!.env.example
+!server/.env.example
 credentials.json
 *.keystore
 *.jks

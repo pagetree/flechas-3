@@ -1,13 +1,12 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/env.php';
+loadServerEnv();
+
 /**
- * Railway production path:
- * - Uses PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD env vars (internal connection).
- *
- * Localhost path:
- * - If server/db.local.php exists, use it as public DB credentials for local testing.
- * - db.local.php must return an array with host, port, dbname, user, pass, sslmode.
+ * Railway: DATABASE_URL is enough.
+ * Local: server/.env (DATABASE_URL) and optional server/db.local.php override.
  */
 function isLocalRequest(): bool
 {
@@ -19,14 +18,38 @@ function isLocalRequest(): bool
         || $remote === '::1';
 }
 
+function envValue(string $key, string $default = ''): string
+{
+    $value = getenv($key);
+    if ($value === false || $value === '') {
+        return $default;
+    }
+    return (string)$value;
+}
+
 $cfg = [
-    'host' => getenv('PGHOST') ?: 'localhost',
-    'port' => getenv('PGPORT') ?: '5432',
-    'dbname' => getenv('PGDATABASE') ?: 'railway',
-    'user' => getenv('PGUSER') ?: 'postgres',
-    'pass' => getenv('PGPASSWORD') ?: '',
-    'sslmode' => getenv('PGSSLMODE') ?: 'require',
+    'host' => 'localhost',
+    'port' => '5432',
+    'dbname' => 'railway',
+    'user' => 'postgres',
+    'pass' => '',
+    'sslmode' => envValue('PGSSLMODE', 'require'),
 ];
+
+$databaseUrl = envValue('DATABASE_URL');
+if ($databaseUrl !== '') {
+    $fromUrl = parseDatabaseUrl($databaseUrl);
+    if ($fromUrl !== null) {
+        $cfg = array_merge($cfg, $fromUrl);
+    }
+} else {
+    // Fallback if someone uses split PG* vars instead of DATABASE_URL
+    $cfg['host'] = envValue('PGHOST', $cfg['host']);
+    $cfg['port'] = envValue('PGPORT', $cfg['port']);
+    $cfg['dbname'] = envValue('PGDATABASE', $cfg['dbname']);
+    $cfg['user'] = envValue('PGUSER', $cfg['user']);
+    $cfg['pass'] = envValue('PGPASSWORD', $cfg['pass']);
+}
 
 if (isLocalRequest()) {
     $localCfgFile = __DIR__ . '/db.local.php';

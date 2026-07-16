@@ -7,6 +7,7 @@
     <string name="level_label">NIVEL %d</string>
     <string name="out_of_lives">FĂRĂ VIEȚI!</string>
     <string name="try_again_in">Reîncearcă în...</string>
+    <string name="loading_level">Se încarcă nivelul...</string>
     <string name="onboarding_logo_content_description">Logo Arrow Game</string>
     <string name="onboarding_welcome_title">Confidentialitatea conteaza</string>
     <string name="onboarding_welcome_description">Fara reclame. Nu vindem datele tale. Stocam doar un identificator al dispozitivului pentru a salva progresul intre dispozitive.</string>

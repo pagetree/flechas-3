@@ -47,7 +47,7 @@ interface GameApi {
 
     companion object {
         // IMPORTANT: Replace this with your actual Railway URL!
-        private const val BASE_URL = "https://flechas-production.up.railway.app/"
+        private const val BASE_URL = "https://arrow-game.up.railway.app/"
 
         fun create(): GameApi {
             return Retrofit.Builder()

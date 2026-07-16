@@ -11,6 +11,11 @@ import kotlinx.coroutines.flow.update
 import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.suspendCancellableCoroutine
+import android.view.Choreographer
+import kotlin.coroutines.resume
 
 class GameViewModel(application: Application) : AndroidViewModel(application) {
     private val api = GameApi.create()
@@ -33,8 +38,103 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(GameState())
     val state: StateFlow<GameState> = _state
 
+    // ── Single master animation loop ──────────────────────────────────────────
+    // Tracks per-arrow progress independently of GameState so we can batch
+    // all updates into a SINGLE state write per frame (no jitter / flooding).
+    private data class ArrowAnim(
+        val id: Int,
+        var progress: Float,
+        val maxProgress: Float,
+        val isObstructed: Boolean
+    )
+    private val activeAnims = mutableMapOf<Int, ArrowAnim>()
+    private var gameLoopJob: Job? = null
+    private val SPEED = 18.0f  // cells per second — tweak here
+
+    private suspend fun awaitFrame(): Long = suspendCancellableCoroutine { cont ->
+        Choreographer.getInstance().postFrameCallback { frameTimeNanos ->
+            if (cont.isActive) cont.resume(frameTimeNanos)
+        }
+    }
+
+    private fun ensureGameLoop() {
+        if (gameLoopJob?.isActive == true) return
+        gameLoopJob = viewModelScope.launch {
+            var lastTime = -1L
+            while (isActive) {
+                // awaitFrame() syncs EXACTLY with the display's VSync signal — zero jitter
+                val frameTimeNanos = awaitFrame()
+                if (lastTime < 0L) {
+                    lastTime = frameTimeNanos
+                    continue
+                }
+                val dt = ((frameTimeNanos - lastTime) / 1_000_000_000f).coerceAtMost(0.05f)
+                lastTime = frameTimeNanos
+
+                if (activeAnims.isEmpty()) {
+                    gameLoopJob = null
+                    return@launch
+                }
+
+                val finished = mutableListOf<ArrowAnim>()
+                for (anim in activeAnims.values) {
+                    anim.progress = (anim.progress + SPEED * dt).coerceAtMost(anim.maxProgress)
+                    if (anim.progress >= anim.maxProgress) finished.add(anim)
+                }
+
+                val puzzleId = _state.value.puzzle?.id ?: continue
+
+                val progressSnapshot = activeAnims.values.associate { it.id to it.progress }
+                val obstructedFinished = finished.filter { it.isObstructed }
+                val exitFinished = finished.filter { !it.isObstructed }
+
+                for (a in finished) activeAnims.remove(a.id)
+
+                _state.update { state ->
+                    if (state.puzzle?.id != puzzleId) return@update state
+
+                    var newMoving = state.movingArrows.map { m ->
+                        val p = progressSnapshot[m.id]
+                        if (p != null) m.copy(progressCells = p) else m
+                    }
+
+                    var newRemaining = state.remaining
+                    var newLives = state.lives
+                    var newLastBlocked = state.lastBlockedArrowId
+                    var newCollision = state.collisionTrigger
+                    var newGameOver = state.isGameOver
+
+                    if (exitFinished.isNotEmpty()) {
+                        val exitIds = exitFinished.map { it.id }.toSet()
+                        newRemaining = newRemaining.filterNot { it.id in exitIds }
+                        newMoving = newMoving.filterNot { it.id in exitIds }
+                    }
+
+                    if (obstructedFinished.isNotEmpty()) {
+                        val obsIds = obstructedFinished.map { it.id }.toSet()
+                        newMoving = newMoving.filterNot { it.id in obsIds }
+                        newLives = (newLives - obstructedFinished.size).coerceAtLeast(0)
+                        newLastBlocked = obstructedFinished.lastOrNull()?.id
+                        newCollision = newCollision + obstructedFinished.size
+                        newGameOver = newLives == 0
+                    }
+
+                    state.copy(
+                        movingArrows = newMoving,
+                        remaining = newRemaining,
+                        lives = newLives,
+                        lastBlockedArrowId = newLastBlocked,
+                        collisionTrigger = newCollision,
+                        isGameOver = newGameOver,
+                        isLevelComplete = newRemaining.isEmpty() && !newGameOver
+                    )
+                }
+            }
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     init {
-        // Fetch seeds and load remote progression before creating the first puzzle.
         fetchSeeds()
         restoreProgressAndStart()
     }
@@ -49,7 +149,6 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 val errorBody = (e as? retrofit2.HttpException)?.response()?.errorBody()?.string()
                 Log.e("ArrowGame", "Failed to fetch seeds: ${e.message}")
                 if (errorBody != null) Log.e("ArrowGame", "Server Error Body: $errorBody")
-                // Fallback: local generation works fine if offline
             }
         }
     }
@@ -62,27 +161,51 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     fun onArrowTap(arrowId: Int, scale: Float = 1f) {
         val current = _state.value
         if (current.isGameOver || current.isLevelComplete) return
-        if (current.movingArrows.any { it.id == arrowId }) return
+        if (activeAnims.containsKey(arrowId)) return  // already animating
 
         val level = current.puzzle ?: return
         val arrow = current.remaining.firstOrNull { it.id == arrowId } ?: return
-        
+
         val collisionDistance = getCollisionDistance(level, arrow, current.remaining, current.movingArrows)
 
         if (collisionDistance != null) {
-            startObstructedArrowAnimation(level, arrow, collisionDistance, scale)
-            return
+            scheduleArrowAnim(level, arrow, collisionDistance, obstructed = true)
+        } else {
+            scheduleArrowAnim(level, arrow, computeExitProgress(level, arrow), obstructed = false)
+        }
+    }
+
+    private fun scheduleArrowAnim(level: LevelMask, arrow: ArrowPiece, maxProgress: Float, obstructed: Boolean) {
+        val puzzleId = level.id
+
+        // Register in tracking map
+        activeAnims[arrow.id] = ArrowAnim(
+            id = arrow.id,
+            progress = 0f,
+            maxProgress = maxProgress,
+            isObstructed = obstructed
+        )
+
+        // Add to movingArrows list in state so the UI renders the animation
+        _state.update { state ->
+            if (state.movingArrows.any { it.id == arrow.id }) state
+            else state.copy(
+                movingArrows = state.movingArrows + MovingArrowState(
+                    id = arrow.id,
+                    progressCells = 0f,
+                    maxProgressCells = maxProgress,
+                    isObstructed = obstructed
+                ),
+                lastBlockedArrowId = null
+            )
         }
 
-        startArrowExitAnimation(level, arrow, scale)
+        ensureGameLoop()
     }
 
     fun resumeWithOneLife() {
         _state.update {
-            it.copy(
-                lives = 1,
-                isGameOver = false
-            )
+            it.copy(lives = 1, isGameOver = false)
         }
     }
 
@@ -101,7 +224,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun nextPuzzle() {
-        // Save the level the player just finished.
+        activeAnims.clear()
         val finishedPuzzleNumber = _state.value.puzzleNumber
         val nextNumber = finishedPuzzleNumber + 1
         val seed = getNextSeed()
@@ -120,11 +243,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 isLevelComplete = false
             )
         }
-        // Store "last completed level", not "next level".
         persistProgress(finishedPuzzleNumber)
     }
 
     fun startRandomPuzzle() {
+        activeAnims.clear()
         val currentPuzzleNumber = _state.value.puzzleNumber
         val seed = getNextSeed()
         val puzzle = LevelRepository.generatePuzzle(puzzleNumber = currentPuzzleNumber, seed = seed)
@@ -141,13 +264,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 isLevelComplete = false
             )
         }
-        // Do not persist here: we only persist when the player completes the level.
     }
 
     private fun restoreProgressAndStart() {
         viewModelScope.launch {
             val remotePuzzleNumber = loadRemotePuzzleNumber()
-            _state.update { it.copy(puzzleNumber = remotePuzzleNumber) }
+            _state.update { it.copy(
+                puzzleNumber = remotePuzzleNumber,
+                isLoadingProgress = false
+            ) }
             startRandomPuzzle()
         }
     }
@@ -180,6 +305,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resetPuzzle() {
+        activeAnims.clear()
         val current = _state.value
         val seed = current.currentSeed ?: getNextSeed()
         val puzzle = LevelRepository.generatePuzzle(puzzleNumber = current.puzzleNumber, seed = seed)
@@ -217,128 +343,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         return null
     }
 
-    private fun startObstructedArrowAnimation(level: LevelMask, arrow: ArrowPiece, distance: Float, scale: Float = 1f) {
-        val puzzleId = level.id
-        val maxProgress = distance
-        
-        _state.update { state ->
-            if (state.movingArrows.any { it.id == arrow.id }) state
-            else state.copy(
-                movingArrows = state.movingArrows + MovingArrowState(
-                    id = arrow.id,
-                    progressCells = 0f,
-                    maxProgressCells = maxProgress,
-                    isObstructed = true
-                ),
-                lastBlockedArrowId = null
-            )
-        }
-
-        viewModelScope.launch {
-            val frameMs = 5L
-            val constantSpeed = 40.0f // Constant speed regardless of zoom
-            var progress = 0f
-            var lastTime = System.nanoTime()
-            while (progress < maxProgress) {
-                delay(frameMs)
-                val now = System.nanoTime()
-                val dt = (now - lastTime) / 1_000_000_000f
-                lastTime = now
-                progress = (progress + constantSpeed * dt).coerceAtMost(maxProgress)
-                val progressSnapshot = progress
-                _state.update { state ->
-                    if (state.puzzle?.id != puzzleId) return@update state
-                    if (state.movingArrows.none { it.id == arrow.id }) return@update state
-                    state.copy(
-                        movingArrows = state.movingArrows.map { moving ->
-                            if (moving.id == arrow.id) moving.copy(progressCells = progressSnapshot) else moving
-                        }
-                    )
-                }
-            }
-
-            // Hit! Remove arrow from moving (snaps back) and trigger collision effects
-            val current = _state.value
-            val nextLives = (current.lives - 1).coerceAtLeast(0)
-            
-            _state.update { state ->
-                if (state.puzzle?.id != puzzleId) return@update state
-                state.copy(
-                    movingArrows = state.movingArrows.filterNot { it.id == arrow.id },
-                    lives = nextLives,
-                    lastBlockedArrowId = arrow.id,
-                    collisionTrigger = state.collisionTrigger + 1,
-                    isGameOver = nextLives == 0
-                )
-            }
-        }
-    }
-
-    private fun startArrowExitAnimation(level: LevelMask, arrow: ArrowPiece, scale: Float = 1f) {
-        val puzzleId = level.id
-        val maxProgress = computeExitProgress(level, arrow)
-        _state.update { state ->
-            if (state.movingArrows.any { it.id == arrow.id }) state
-            else state.copy(
-                movingArrows = state.movingArrows + MovingArrowState(
-                    id = arrow.id,
-                    progressCells = 0f,
-                    maxProgressCells = maxProgress
-                ),
-                lastBlockedArrowId = null
-            )
-        }
-
-        viewModelScope.launch {
-            val frameMs = 5L
-            val constantSpeed = 40.0f // Constant speed regardless of zoom
-            var progress = 0f
-            var lastTime = System.nanoTime()
-            while (progress < maxProgress) {
-                delay(frameMs)
-                val now = System.nanoTime()
-                val dt = (now - lastTime) / 1_000_000_000f
-                lastTime = now
-                progress = (progress + constantSpeed * dt).coerceAtMost(maxProgress)
-                val progressSnapshot = progress
-                _state.update { state ->
-                    if (state.puzzle?.id != puzzleId) return@update state
-                    if (state.movingArrows.none { it.id == arrow.id }) return@update state
-                    state.copy(
-                        movingArrows = state.movingArrows.map { moving ->
-                            if (moving.id == arrow.id) moving.copy(progressCells = progressSnapshot) else moving
-                        }
-                    )
-                }
-            }
-
-            _state.update { state ->
-                if (state.puzzle?.id != puzzleId) return@update state
-                val newRemaining = state.remaining.filterNot { it.id == arrow.id }
-                state.copy(
-                    remaining = newRemaining,
-                    movingArrows = state.movingArrows.filterNot { it.id == arrow.id },
-                    lastBlockedArrowId = null,
-                    isLevelComplete = newRemaining.isEmpty()
-                )
-            }
-        }
-    }
-
     private fun computeExitProgress(level: LevelMask, arrow: ArrowPiece): Float {
         val cells = if (arrow.path.isNotEmpty()) arrow.path else listOf(arrow.start)
         var maxSteps = 0
         for (cell in cells) {
             val steps = when (arrow.direction) {
                 Direction.RIGHT -> level.width - cell.x
-                Direction.LEFT -> cell.x + 1
-                Direction.DOWN -> level.height - cell.y
-                Direction.UP -> cell.y + 1
+                Direction.LEFT  -> cell.x + 1
+                Direction.DOWN  -> level.height - cell.y
+                Direction.UP    -> cell.y + 1
             }
             if (steps > maxSteps) maxSteps = steps
         }
-        // Add extra travel so the entire arrow body/head fully leaves the visible board.
-        val offscreenMarginCells = 2.4f
+        val offscreenMarginCells = kotlin.math.max(level.width, level.height).toFloat() + 5f
         return maxSteps.toFloat() + offscreenMarginCells
     }
 }
