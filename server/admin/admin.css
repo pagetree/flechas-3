@@ -176,10 +176,40 @@ body {
     color: #ef4444;
 }
 
+.cards-primary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .panel {
     background: #111a33;
     border-radius: 12px;
     overflow: hidden;
+}
+
+.panel-title {
+    padding: 14px 16px 0;
+    font-size: 16px;
+    font-weight: var(--font-weight-extra-bold);
+    color: #bfdbfe;
+}
+
+.type-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: var(--font-weight-extra-bold);
+}
+
+.type-player {
+    background: #1e3a8a;
+    color: #dbeafe;
+}
+
+.type-guest {
+    background: #334155;
+    color: #e2e8f0;
 }
 
 table {
@@ -281,6 +311,10 @@ input {
 
     .cards-primary .card-plays {
         order: 2;
+    }
+
+    .cards-primary .card-all-players {
+        order: 3;
     }
 
     .cards-secondary {

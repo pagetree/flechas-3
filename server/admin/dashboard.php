@@ -74,13 +74,64 @@ $playsTrend = trendMeta((float)$totalPlays, (float)($metrics['prev_total_plays']
 $avgTimeTrend = trendMeta($avgTime, (float)($metrics['prev_avg_time'] ?? 0));
 $devicesTrend = trendMeta((float)$totalDevices, (float)($metrics['prev_total_devices'] ?? 0));
 
-$topDevicesStmt = $pdo->query("
-    SELECT device_id, puzzles_played, total_play_time_seconds, last_seen_at
-    FROM devices
-    ORDER BY puzzles_played DESC, total_play_time_seconds DESC
-    LIMIT 20
-");
-$topDevices = $topDevicesStmt ? $topDevicesStmt->fetchAll() : [];
+$registeredPlayersCount = 0;
+$guestPlayersCount = 0;
+try {
+    $registeredPlayersCount = (int)($pdo->query("SELECT COUNT(*)::INT AS c FROM players")->fetch()['c'] ?? 0);
+    $guestPlayersCount = (int)($pdo->query("
+        SELECT COUNT(*)::INT AS c
+        FROM devices d
+        WHERE NOT EXISTS (
+            SELECT 1 FROM players p
+            WHERE p.device_id IS NOT NULL AND p.device_id = d.device_id
+        )
+    ")->fetch()['c'] ?? 0);
+} catch (Throwable $e) {
+    $registeredPlayersCount = 0;
+    $guestPlayersCount = 0;
+}
+$allPlayersCount = $registeredPlayersCount + $guestPlayersCount;
+
+$allPlayers = [];
+try {
+    $allPlayersStmt = $pdo->query("
+        SELECT
+            'player' AS kind,
+            email AS player_id,
+            player_name,
+            COALESCE(device_id, '') AS device_id,
+            current_puzzle_number,
+            max_puzzle_number,
+            puzzles_played,
+            total_play_time_seconds,
+            last_seen_at
+        FROM players
+
+        UNION ALL
+
+        SELECT
+            'guest' AS kind,
+            d.device_id AS player_id,
+            'Guest' AS player_name,
+            d.device_id AS device_id,
+            d.current_puzzle_number,
+            d.max_puzzle_number,
+            d.puzzles_played,
+            d.total_play_time_seconds,
+            d.last_seen_at
+        FROM devices d
+        WHERE NOT EXISTS (
+            SELECT 1 FROM players p
+            WHERE p.device_id IS NOT NULL AND p.device_id = d.device_id
+        )
+
+        ORDER BY last_seen_at DESC NULLS LAST
+        LIMIT 200
+    ");
+    $allPlayers = $allPlayersStmt ? $allPlayersStmt->fetchAll() : [];
+} catch (Throwable $e) {
+    $allPlayers = [];
+}
 ?>
 <!doctype html>
 <html lang="en">
@@ -131,6 +182,16 @@ $topDevices = $topDevicesStmt ? $topDevicesStmt->fetchAll() : [];
                 <span class="trend-label">vs previous period</span>
             </div>
         </div>
+        <div class="card card-all-players">
+            <div class="metric-head">
+                <span class="material-symbols-outlined metric-icon" aria-hidden="true">group</span>
+                <div class="label">All Players</div>
+            </div>
+            <div class="value"><?= $allPlayersCount ?></div>
+            <div class="trend-row">
+                <span class="trend-label"><?= $registeredPlayersCount ?> registered · <?= $guestPlayersCount ?> guests</span>
+            </div>
+        </div>
     </div>
 
     <div class="cards cards-secondary">
@@ -168,22 +229,38 @@ $topDevices = $topDevicesStmt ? $topDevicesStmt->fetchAll() : [];
     </div>
 
     <div class="panel">
+        <div class="panel-title">Players & Guests</div>
         <table>
             <thead>
             <tr>
+                <th>Type</th>
+                <th>Player ID</th>
+                <th>Name</th>
                 <th>Device ID</th>
+                <th>Current</th>
+                <th>Max</th>
                 <th>Puzzles Played</th>
-                <th>Total Play Time (s)</th>
+                <th>Play Time (s)</th>
                 <th>Last Seen</th>
             </tr>
             </thead>
             <tbody>
-            <?php if (empty($topDevices)): ?>
-                <tr><td colspan="4">No device stats available yet.</td></tr>
+            <?php if (empty($allPlayers)): ?>
+                <tr><td colspan="9">No players or guests yet.</td></tr>
             <?php else: ?>
-                <?php foreach ($topDevices as $row): ?>
+                <?php foreach ($allPlayers as $row): ?>
+                    <?php $kind = (string)($row['kind'] ?? 'guest'); ?>
                     <tr>
+                        <td>
+                            <span class="type-badge type-<?= $kind === 'player' ? 'player' : 'guest' ?>">
+                                <?= $kind === 'player' ? 'Player' : 'Guest' ?>
+                            </span>
+                        </td>
+                        <td><?= htmlspecialchars((string)$row['player_id'], ENT_QUOTES, 'UTF-8') ?></td>
+                        <td><?= htmlspecialchars((string)$row['player_name'], ENT_QUOTES, 'UTF-8') ?></td>
                         <td><?= htmlspecialchars((string)$row['device_id'], ENT_QUOTES, 'UTF-8') ?></td>
+                        <td><?= (int)$row['current_puzzle_number'] ?></td>
+                        <td><?= (int)$row['max_puzzle_number'] ?></td>
                         <td><?= (int)$row['puzzles_played'] ?></td>
                         <td><?= number_format((float)$row['total_play_time_seconds'], 2) ?></td>
                         <td><?= htmlspecialchars((string)$row['last_seen_at'], ENT_QUOTES, 'UTF-8') ?></td>
