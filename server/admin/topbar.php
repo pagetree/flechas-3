@@ -10,7 +10,7 @@ if (!function_exists('renderAdminTopbar')) {
             <div>
                 <img
                     class="brand-logo"
-                    src="/app/src/main/res/drawable/arrows_logo.png"
+                    src="<?= htmlspecialchars(adminUrl('arrows_logo.png'), ENT_QUOTES, 'UTF-8') ?>"
                     alt="Arrow Game"
                 >
                 <?php if ($showEmail && $adminEmail !== ''): ?>

@@ -88,7 +88,7 @@ $topDevices = $topDevicesStmt ? $topDevicesStmt->fetchAll() : [];
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Arrow Game Admin Dashboard</title>
-    <link rel="stylesheet" href="/server/admin/admin.css">
+    <link rel="stylesheet" href="<?= htmlspecialchars(adminUrl('admin.css'), ENT_QUOTES, 'UTF-8') ?>">
 </head>
 <body>
 <div class="container">

@@ -3,8 +3,6 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
-require_once 'db.php';
-
 $method = $_SERVER['REQUEST_METHOD'];
 $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $action = $_GET['action'] ?? '';
@@ -20,7 +18,7 @@ if (str_starts_with($normalizedPath, 'admin')) {
     $adminRelative = ltrim($adminRelative, '/');
     $target = $adminRelative === '' ? 'index.php' : $adminRelative;
 
-    // Prevent traversal and only allow php files inside /server/admin.
+    // Prevent traversal and only allow files inside /server/admin.
     if (str_contains($target, '..')) {
         http_response_code(400);
         header('Content-Type: text/plain');
@@ -29,16 +27,44 @@ if (str_starts_with($normalizedPath, 'admin')) {
     }
 
     $targetPath = __DIR__ . '/admin/' . $target;
-    if (!str_ends_with($targetPath, '.php') || !is_file($targetPath)) {
+    if (!is_file($targetPath)) {
         http_response_code(404);
         header('Content-Type: text/plain');
         echo 'Not found';
         exit;
     }
 
+    // Static assets first (no DB needed).
+    $ext = strtolower(pathinfo($targetPath, PATHINFO_EXTENSION));
+    $staticTypes = [
+        'css' => 'text/css; charset=utf-8',
+        'png' => 'image/png',
+        'jpg' => 'image/jpeg',
+        'jpeg' => 'image/jpeg',
+        'webp' => 'image/webp',
+        'svg' => 'image/svg+xml',
+        'ico' => 'image/x-icon',
+    ];
+    if (isset($staticTypes[$ext])) {
+        header('Content-Type: ' . $staticTypes[$ext]);
+        header('Cache-Control: public, max-age=86400');
+        readfile($targetPath);
+        exit;
+    }
+
+    if ($ext !== 'php') {
+        http_response_code(404);
+        header('Content-Type: text/plain');
+        echo 'Not found';
+        exit;
+    }
+
+    require_once 'db.php';
     require $targetPath;
     exit;
 }
+
+require_once 'db.php';
 
 if ($action !== 'download_schema_dump') {
     header('Content-Type: application/json');
